@@ -1,3 +1,7 @@
+/* TODO
+    - Implement RUN loop
+    - First pass of assembler w/ symbol table
+*/
 // Editor settings
 var editor = ace.edit("editor");
 let source;
@@ -40,8 +44,8 @@ const STATIC_ADDR = PROGRAM_TEXT_ADDR + MAX_PROGRAM_SIZE
 
 // Array of operation objects
 let OPS = [
-    {name: "add", type: 'R', args: 3, opcode: "100000"},
-    {name: "addi", type: 'I', args: 3, opcode: "001000"}
+    {name: "add", type: 'R', args: 3, opcode: "100000", func: function(rs, rt, rd) {REG[rd] = REG[rs]+REG[rt]}},
+    {name: "addi", type: 'I', args: 3, opcode: "001000", func: function(rs, rt, imm) {REG[rt] = REG[rs] + imm}}
 ]
 
 // Map of instruction keywords to their corresponding operation objects
@@ -54,11 +58,12 @@ function createInstrMap() {
 createInstrMap();
 
 // Map of opcodes to their corresponding operation objects
-let OPCODE_LKUP = new Map();
+let OPCODE_MAP = new Map();
 function createOpcodeMap() {
     for (let i = 0; i < OPS.length; i++) {
-        INSTR_MAP.set(OPS[i].opcode, OPS[i]);
+        OPCODE_MAP.set(OPS[i].opcode, OPS[i]);
     }
+    console.log(OPCODE_MAP);
 }
 createOpcodeMap();
 
@@ -120,17 +125,13 @@ function assemble() {
 
             // Check for system call
             if (line[0] === "syscall") {
-                // Switch on value of $v0
-                switch (REGS[2]) {
-                    case 1:
-                        console.log("syscall!");
-                        break;
-                }
+                instr = "00000000000000000000000000001100" // SYSCALL instruction
+                writeInstruction(instr);
             }
             // Check if valid instruction keyword
             else if (INSTR_MAP.has(line[0])) {
                 let instr_obj = INSTR_MAP.get(line[0]);
-                console.log(instr_obj)
+                // console.log(instr_obj)
 
                 if (line.length > instr_obj.args + 1) {
                     // Too many arguments provided - print error
@@ -162,7 +163,7 @@ function assemble() {
 
                     instr = instr_obj.opcode + REG_DEFS[rs] + REG_DEFS[rt] + imm;
                     writeInstruction(instr);
-                    // console.log(instr);
+                    console.log(instr);
                     // console.log(instr.length);
                 }
 
@@ -181,6 +182,7 @@ function assemble() {
     }
 } // End assemble()
 
+// Run program code
 function run() {
     // Set program counter to 0
     PC = 0;
@@ -188,18 +190,65 @@ function run() {
     // Instruction bitstring
     let instr;
     // Instruction execution loop
-    while(PC <= PROG_LENGTH) {
+    while(PC < PROG_LENGTH) {
+        // Fetch next instruction from memory - insure 32 bit width
+        // 8 MSB's
+        instr3 = MEM[PC+3].toString(2);
+        instr3 = "0".repeat(8-instr3.length) + instr3; // Sign extension 8 bits wide
+        // console.log(instr3);
+        // Next 8
+        instr2 = MEM[PC+2].toString(2);
+        instr2 = "0".repeat(8-instr2.length) + instr2; // Sign extension 8 bits wide
+        // console.log(instr2);
+        // Next 8
+        instr1 = MEM[PC+1].toString(2);
+        instr1 = "0".repeat(8-instr1.length) + instr1; // Sign extension 8 bits wide
+        // console.log(instr1);
+        // 8 LSB's
+        instr0 = MEM[PC].toString(2);
+        instr0 = "0".repeat(8-instr0.length) + instr0; // Sign extension 8 bits wide
+        // console.log(instr0);
 
-        // Get instruction memory
-        instr = MEM[PC+3].toString(2) + MEM[PC+2].toString(2) + MEM[PC+1].toString(2) + MEM[PC].toString(2);
+        // Full instruction bitstring
+        instr = instr3 + instr2 + instr1 + instr0;
         console.log(instr);
+
+
+        let opcode = instr.slice(0,6);       // Get opcode of instruction
+        // console.log(opcode);
+        let op_obj = OPCODE_MAP.get(opcode); // Get operation object
+        console.log(op_obj);
+        // Check for SYSCALL instruction
+        if (instr === "00000000000000000000000000001100") {
+            switch (REG[2]) { // Switch on $v0
+                case 1: 
+                    console.log("printing");
+                    console.log(REG[4]); // if $v0 == 1, print the integer stored in $a0
+                    break;
+            }
+        }
+        else if (op_obj.type === 'R') {
+            // Instruction format: op rd, rs, rt
+            op_obj.func(rs, rt, rd);
+        }
+        else if (op_obj.type === 'I') {
+            // Since the binary instruction is encoded as a string, the bit order is reversed when indexing
+            let rs = parseInt(instr.slice(6, 11), 2);    // Bits instr[21:25]
+            // console.log(rs);
+            let rt = parseInt(instr.slice(11, 16), 2);   // Bits instr[16:20]
+            // console.log(rt);
+            let imm = parseInt(instr.slice(16, 32), 2);  // Bits instr[0:15]
+            // console.log(imm);
+
+
+            // Instruction format: op rt, rs, imm
+            op_obj.func(rs, rt, imm);
+        }
 
         // Increment PC after fetching instruction
         PC += 4;
-
     }
-
-}
+} // End run()
 
 // Write a given 32 bit instruction to memory address pointed to by the program counter
 // Little Endian data storage
@@ -212,13 +261,13 @@ function writeInstruction(instr) {
     // Keep track of total # of instructions written, each instruction is 4 bytes
     PROG_LENGTH += 4;
     // LSBs are the rightmost bits in the instruction string
-    MEM[PC] = parseInt(instr.slice(24, 31), 2);
+    MEM[PC] = parseInt(instr.slice(24, 32), 2);
     PC++;
-    MEM[PC] = parseInt(instr.slice(16, 23), 2);
+    MEM[PC] = parseInt(instr.slice(16, 24), 2);
     PC++;
-    MEM[PC] = parseInt(instr.slice(8, 15), 2);
+    MEM[PC] = parseInt(instr.slice(8, 16), 2);
     PC++;
-    MEM[PC] = parseInt(instr.slice(0, 7), 2);
+    MEM[PC] = parseInt(instr.slice(0, 8), 2);
     PC++;
 }
 
