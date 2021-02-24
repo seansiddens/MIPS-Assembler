@@ -1,7 +1,3 @@
-/* TODO
-    - Implement RUN loop
-    - First pass of assembler w/ symbol table
-*/
 // Editor settings
 var editor = ace.edit("editor");
 let source;
@@ -63,9 +59,11 @@ function createOpcodeMap() {
     for (let i = 0; i < OPS.length; i++) {
         OPCODE_MAP.set(OPS[i].opcode, OPS[i]);
     }
-    console.log(OPCODE_MAP);
 }
 createOpcodeMap();
+
+// Symbol table for labels
+let SYMBOL_TABLE = new Map();
 
 // Failure flag for assembler
 let ASSEMBLER_FAILED;
@@ -74,8 +72,7 @@ function assemble() {
 
     // No instructions written yet
     PROG_LENGTH = 0;
-    // Set program counter to 0
-    PC = 0;
+
 
     // Store source code in array, split line by line
     source = editor.getValue().split("\n"); 
@@ -99,13 +96,83 @@ function assemble() {
     // Immediate value
     let imm;
 
-    // Traverse code and translate to program instructions
+    // First Pass: When encounter a symbol, add PC address and symbol to the symbol table
+    // Whenever a valid instruction is encountered, increment PC
+    for (let i = 0; i < source.length; i++) {
+        // Set program counter to 0
+        PC = 0;
+        if (source[i].length == 0) {
+            continue; // Skip empty lines
+        }
+        line = source[i].split(" "); // Split line into words
+
+        // Check for assembler directives and switch flag so we know which section we are in
+        switch (line[0]) {
+            case ".text":
+                text_flag = true;
+                data_flag = false;
+                continue;
+
+            case ".data":
+                text_flag = false;
+                data_flag = true;
+                continue;
+        }
+
+        // In .text section
+        if (text_flag) {
+            // Check for valid label symbols in code
+            if (line[0].slice(-1) === ':' && line[0][0].toLowerCase() != line[0][0].toUpperCase()) {
+                console.log("Label at line: ", (i+1).toString());
+                source.splice(i, 1); // Remove label from source
+            }
+
+            // Check for system call
+            if (line[0] === "syscall") {
+                instr = "00000000000000000000000000001100" // SYSCALL instruction
+                incrementPC();
+            }
+            // Check if valid instruction keyword
+            else if (INSTR_MAP.has(line[0])) {
+                let instr_obj = INSTR_MAP.get(line[0]);
+                // console.log(instr_obj)
+
+                if (line.length > instr_obj.args + 1) {
+                    // Too many arguments provided - print error
+                    assemblerErr(i);
+                    break;
+                }
+                if (instr_obj.type === 'R') { // Check for valid R type instruction
+                    // Ensure proper args
+                    rd = line[1] in REG_DEFS ? line[1] : assemblerErr(i);
+                    rs = line[2] in REG_DEFS ? line[2] : assemblerErr(i);
+                    rt = line[3] in REG_DEFS ? line[3] : assemblerErr(i);
+
+                    incrementPC();
+                }
+                else if (instr_obj.type === 'I') { // Check for valid I type instruction
+                    // Ensure proper args
+                    rt = line[1] in REG_DEFS ? line[1] : assemblerErr(i);
+                    rs = line[2] in REG_DEFS ? line[2] : assemblerErr(i);
+                    imm = !isNaN(line[3]) ? parseInt(line[3]).toString(2) : assemblerErr(i);
+
+                    incrementPC();
+                }
+            }
+            else {
+                // Invalid isntruction keyword - print error
+                return assemblerErr(i);
+            }
+        }
+    } // End First pass
+
+
+    // Second Pass: Traverse code and translate to program instructions
     for (let i = 0; i < source.length; i++) {
         if (source[i].length == 0) {
             continue; // Skip empty lines
         }
         line = source[i].split(" "); // Split line into words
-        // console.log(instr[0])
 
         // Check for assembler directives
         switch (line[0]) {
@@ -122,7 +189,6 @@ function assemble() {
 
         // Process .text instructions
         if (text_flag) {
-
             // Check for system call
             if (line[0] === "syscall") {
                 instr = "00000000000000000000000000001100" // SYSCALL instruction
@@ -163,18 +229,16 @@ function assemble() {
 
                     instr = instr_obj.opcode + REG_DEFS[rs] + REG_DEFS[rt] + imm;
                     writeInstruction(instr);
-                    console.log(instr);
+                    // console.log(instr);
                     // console.log(instr.length);
                 }
-
-
             }
             else {
                 // Invalid isntruction keyword - print error
                 return assemblerErr(i);
             }
         }
-    }
+    } // End Second pass
 
     // If assembler succeeded, enable run button
     if (!ASSEMBLER_FAILED && PROG_LENGTH > 0) {
@@ -211,23 +275,29 @@ function run() {
 
         // Full instruction bitstring
         instr = instr3 + instr2 + instr1 + instr0;
-        console.log(instr);
-
+        // console.log(instr);
 
         let opcode = instr.slice(0,6);       // Get opcode of instruction
         // console.log(opcode);
         let op_obj = OPCODE_MAP.get(opcode); // Get operation object
-        console.log(op_obj);
+        // console.log(op_obj);
         // Check for SYSCALL instruction
         if (instr === "00000000000000000000000000001100") {
             switch (REG[2]) { // Switch on $v0
                 case 1: 
-                    console.log("printing");
                     console.log(REG[4]); // if $v0 == 1, print the integer stored in $a0
                     break;
             }
         }
         else if (op_obj.type === 'R') {
+            // Since the binary instruction is encoded as a string, the bit order is reversed when indexing
+            let rs = parseInt(instr.slice(6, 11), 2);    // Bits instr[21:25]
+            // console.log(rs);
+            let rt = parseInt(instr.slice(11, 16), 2);   // Bits instr[16:20]
+            // console.log(rt);
+            let rd = parseInt(instr.slice(16, 21), 2);  // Bits instr[11:15]
+            // console.log(imm);
+
             // Instruction format: op rd, rs, rt
             op_obj.func(rs, rt, rd);
         }
@@ -239,7 +309,6 @@ function run() {
             // console.log(rt);
             let imm = parseInt(instr.slice(16, 32), 2);  // Bits instr[0:15]
             // console.log(imm);
-
 
             // Instruction format: op rt, rs, imm
             op_obj.func(rs, rt, imm);
@@ -262,13 +331,16 @@ function writeInstruction(instr) {
     PROG_LENGTH += 4;
     // LSBs are the rightmost bits in the instruction string
     MEM[PC] = parseInt(instr.slice(24, 32), 2);
-    PC++;
-    MEM[PC] = parseInt(instr.slice(16, 24), 2);
-    PC++;
-    MEM[PC] = parseInt(instr.slice(8, 16), 2);
-    PC++;
-    MEM[PC] = parseInt(instr.slice(0, 8), 2);
-    PC++;
+    MEM[PC+1] = parseInt(instr.slice(16, 24), 2);
+    MEM[PC+2] = parseInt(instr.slice(8, 16), 2);
+    MEM[PC+3] = parseInt(instr.slice(0, 8), 2);
+
+    incrementPC();
+}
+
+// Increments program counter by 4
+function incrementPC() {
+    PC += 4;
 }
 
 function assemblerErr(lineNumber) {
